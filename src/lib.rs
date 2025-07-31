@@ -1,16 +1,29 @@
+//! Sienna - A high-performance image processing library
+//!
+//! This library provides tools for advanced image processing with color-accurate
+//! workflows using ACES color space for professional image manipulation.
+
+pub mod builder;
+pub mod color;
+pub mod error;
 pub mod pipeline;
 pub mod stages;
 
-use image::{GenericImageView, ImageError};
+use image::GenericImageView;
 use imgref::ImgVec;
 use kolor::{
     ColorSpace, Vec3,
-    details::conversion::LinearColorConversion,
     spaces::{ACES_CG, LINEAR_SRGB, PRO_PHOTO},
 };
-use rayon::prelude::*;
 use std::path::Path;
 
+use crate::color::convert_pixels;
+pub use crate::error::ProcessingError;
+
+/// Core image structure for processing operations
+///
+/// Stores image data in a linear color space with associated metadata.
+/// All processing operations work in ACES-CG color space for accuracy.
 pub struct ProcessingImage {
     pixels: ImgVec<Vec3>,
     space: ColorSpace,
@@ -24,19 +37,8 @@ impl ProcessingImage {
             space: to,
         }
     }
-}
 
-pub fn convert_pixels(pixels: &Vec<Vec3>, from: ColorSpace, to: ColorSpace) -> Vec<Vec3> {
-    if from == to {
-        return pixels.to_vec();
-    }
-
-    let converter = LinearColorConversion::new(from, to);
-    pixels.par_iter().map(|&p| converter.convert(p)).collect()
-}
-
-impl ProcessingImage {
-    pub fn from_png(path: &Path) -> Result<Self, ImageError> {
+    pub fn from_png(path: &Path) -> Result<Self, ProcessingError> {
         let img = image::open(path)?;
 
         let pixels = img
@@ -58,7 +60,7 @@ impl ProcessingImage {
         })
     }
 
-    pub fn to_jpg(&self, path: &Path) -> Result<(), ImageError> {
+    pub fn to_jpg(&self, path: &Path) -> Result<(), ProcessingError> {
         let image_srgb = &self.convert(LINEAR_SRGB);
 
         let img = image::ImageBuffer::from_fn(
@@ -75,6 +77,6 @@ impl ProcessingImage {
             },
         );
 
-        img.save(path)
+        img.save(path).map_err(ProcessingError::ImageSave)
     }
 }

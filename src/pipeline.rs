@@ -1,11 +1,13 @@
 use crate::ProcessingImage;
 
+/// Trait for image processing stages that can be chained together
 pub trait ProcessingStage: Send + Sync {
     fn process(&self, image: &mut ProcessingImage);
 }
 
+/// Processing pipeline that executes stages in sequence
 pub struct Pipeline {
-    stages: Vec<Box<dyn ProcessingStage>>,
+    pub(crate) stages: Vec<Box<dyn ProcessingStage>>,
 }
 
 impl Pipeline {
