@@ -1,11 +1,6 @@
-use kolor::Vec3;
-
 use crate::{
     pipeline::{Pipeline, ProcessingStage},
-    stages::{
-        ColorGrade, ColorRichness, ContrastCurve, Exposure, FilmBlacks, FilmCurve,
-        LuminanceSaturation, SplitTone,
-    },
+    stages::{ColorRichness, ContrastCurve, Exposure, SelectiveColorRichness},
 };
 
 pub struct PipelineBuilder {
@@ -22,66 +17,52 @@ impl PipelineBuilder {
         self
     }
 
-    pub fn richness(mut self, separation: f32, density: f32) -> Self {
-        self.stages.push(Box::new(ColorRichness {
-            separation_strength: separation,
-            density_strength: density,
-        }));
+    pub fn richness(mut self, saturation_boost: f32) -> Self {
+        self.stages
+            .push(Box::new(ColorRichness { saturation_boost }));
         self
     }
 
-    pub fn film_blacks(mut self, crush: f32, lift: f32) -> Self {
-        self.stages.push(Box::new(FilmBlacks {
-            crush_point: crush,
-            lift_amount: lift,
-        }));
-        self
-    }
-
-    pub fn contrast(mut self, strength: f32, pivot: f32) -> Self {
-        self.stages.push(Box::new(ContrastCurve {
-            contrast: strength,
-            pivot,
-        }));
-        self
-    }
-
-    pub fn split_tone(
+    pub fn selective_richness(
         mut self,
-        shadow_hue: f32,
-        shadow_sat: f32,
-        highlight_hue: f32,
-        highlight_sat: f32,
+        red: f32,
+        orange: f32,
+        yellow: f32,
+        green: f32,
+        cyan: f32,
+        blue: f32,
+        magenta: f32,
     ) -> Self {
-        self.stages.push(Box::new(SplitTone {
-            shadow_hue,
-            shadow_saturation: shadow_sat,
-            highlight_hue,
-            highlight_saturation: highlight_sat,
+        self.stages.push(Box::new(SelectiveColorRichness {
+            red_boost: red,
+            orange_boost: orange,
+            yellow_boost: yellow,
+            green_boost: green,
+            cyan_boost: cyan,
+            blue_boost: blue,
+            magenta_boost: magenta,
         }));
         self
     }
 
-    pub fn color_grade(mut self, shadows: Vec3, midtones: Vec3, highlights: Vec3) -> Self {
-        self.stages.push(Box::new(ColorGrade {
-            shadows,
-            midtones,
-            highlights,
-        }));
-        self
+    pub fn film_colors(self) -> Self {
+        self.selective_richness(
+            0.2, // red - slight boost for skin warmth
+            0.3, // orange - warm highlights
+            0.1, // yellow - subtle warmth
+            0.4, // green - rich foliage
+            0.2, // cyan - cooler shadows
+            0.3, // blue - rich skies
+            0.1, // magenta - subtle
+        )
     }
 
-    pub fn luminance_saturation(mut self, shadow: f32, midtone: f32, highlight: f32) -> Self {
-        self.stages.push(Box::new(LuminanceSaturation {
-            shadow_sat: shadow,
-            midtone_sat: midtone,
-            highlight_sat: highlight,
-        }));
-        self
-    }
-
-    pub fn film_curve(mut self, strength: f32) -> Self {
-        self.stages.push(Box::new(FilmCurve { strength }));
+    /// Contrast curve
+    /// contrast: 1.0 is no change, higher values increase contrast, lower values decrease contrast
+    /// pivot: 0.6 is midtones
+    pub fn contrast(mut self, contrast: f32, pivot: f32) -> Self {
+        self.stages
+            .push(Box::new(ContrastCurve { contrast, pivot }));
         self
     }
 

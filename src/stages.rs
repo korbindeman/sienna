@@ -1,4 +1,9 @@
-use kolor::Vec3;
+use std::f32::consts::PI;
+
+use kolor::{
+    Vec3,
+    spaces::{ACES_CG, OKLAB},
+};
 use rayon::prelude::*;
 
 use crate::{ProcessingImage, pipeline::ProcessingStage};
@@ -11,7 +16,7 @@ pub struct Exposure {
 impl ProcessingStage for Exposure {
     fn process(&self, image: &mut ProcessingImage) {
         let factor = 2.0f32.powf(self.stops);
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
+        image.iter().for_each(|pixel| {
             pixel.x *= factor;
             pixel.y *= factor;
             pixel.z *= factor;
@@ -19,232 +24,77 @@ impl ProcessingStage for Exposure {
     }
 }
 
-/// Film-like S-curve stage - adds cinematic contrast curve
-pub struct FilmCurve {
-    pub strength: f32,
-}
-
-impl ProcessingStage for FilmCurve {
-    fn process(&self, image: &mut ProcessingImage) {
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
-            pixel.x = apply_curve(pixel.x, self.strength);
-            pixel.y = apply_curve(pixel.y, self.strength);
-            pixel.z = apply_curve(pixel.z, self.strength);
-        });
-    }
-}
-
-fn apply_curve(x: f32, strength: f32) -> f32 {
-    // Lifted blacks, compressed highlights
-    let lifted = x + 0.003 * strength;
-    lifted / (1.0 + lifted * strength * 0.8)
-}
-
-/// Selective color grading stage - applies different colors to shadows, midtones, and highlights
-pub struct ColorGrade {
-    pub shadows: Vec3,
-    pub midtones: Vec3,
-    pub highlights: Vec3,
-}
-
-impl ProcessingStage for ColorGrade {
-    fn process(&self, image: &mut ProcessingImage) {
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
-            let lum = pixel.x * 0.2722 + pixel.y * 0.6741 + pixel.z * 0.0537;
-
-            // Three-way color correction
-            let shadow_weight = (1.0 - lum).max(0.0);
-            let highlight_weight = lum.max(0.0);
-            let midtone_weight = 1.0 - (2.0 * (lum - 0.5)).abs();
-
-            *pixel = *pixel
-                + self.shadows * shadow_weight * 0.1
-                + self.midtones * midtone_weight * 0.05
-                + self.highlights * highlight_weight * 0.05;
-        });
-    }
-}
-
-// Shadow crushing with lifted blacks
-pub struct FilmBlacks {
-    pub crush_point: f32, // 0.0-0.3
-    pub lift_amount: f32, // 0.0-0.05
-}
-
-impl ProcessingStage for FilmBlacks {
-    fn process(&self, image: &mut ProcessingImage) {
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
-            // Crush shadows
-            pixel.x = remap_shadows(pixel.x, self.crush_point, self.lift_amount);
-            pixel.y = remap_shadows(pixel.y, self.crush_point, self.lift_amount);
-            pixel.z = remap_shadows(pixel.z, self.crush_point, self.lift_amount);
-        });
-    }
-}
-
-fn remap_shadows(value: f32, crush: f32, lift: f32) -> f32 {
-    if value < crush {
-        lift + (value / crush) * (crush - lift)
-    } else {
-        value
-    }
-}
-
-// S-curve contrast with adjustable pivot
 pub struct ContrastCurve {
     pub contrast: f32,
     pub pivot: f32,
 }
 
 impl ProcessingStage for ContrastCurve {
+    // TODO: skin tone preservation
     fn process(&self, image: &mut ProcessingImage) {
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
+        let mut oklab_image = image.convert(OKLAB);
+
+        oklab_image.iter().for_each(|pixel| {
+            // Only apply curve to lightness (L channel)
             pixel.x = apply_contrast_curve(pixel.x, self.contrast, self.pivot);
-            pixel.y = apply_contrast_curve(pixel.y, self.contrast, self.pivot);
-            pixel.z = apply_contrast_curve(pixel.z, self.contrast, self.pivot);
+            // Leave a and b channels unchanged
+            // pixel.y and pixel.z stay the same
         });
+
+        *image = oklab_image.convert(ACES_CG);
     }
 }
 
 fn apply_contrast_curve(value: f32, contrast: f32, pivot: f32) -> f32 {
-    let normalized = (value - pivot) / (1.0 - pivot);
-    let curved = normalized / (1.0 + contrast * normalized.abs()).powf(1.0 / contrast);
-    curved * (1.0 - pivot) + pivot
-}
+    let clamped_value = value.clamp(0.0, 1.0);
 
-// Split-tone grading
-pub struct SplitTone {
-    pub shadow_hue: f32,
-    pub shadow_saturation: f32,
-    pub highlight_hue: f32,
-    pub highlight_saturation: f32,
-}
-
-impl ProcessingStage for SplitTone {
-    fn process(&self, image: &mut ProcessingImage) {
-        let shadow_color = hsl_to_rgb(self.shadow_hue, self.shadow_saturation, 0.5);
-        let highlight_color = hsl_to_rgb(self.highlight_hue, self.highlight_saturation, 0.5);
-
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
-            let lum = pixel.x * 0.2722 + pixel.y * 0.6741 + pixel.z * 0.0537;
-
-            // Blend colors based on luminance
-            let shadow_weight = (1.0 - lum * 2.0).max(0.0);
-            let highlight_weight = ((lum - 0.5) * 2.0).max(0.0);
-
-            *pixel = *pixel
-                + (shadow_color - Vec3::splat(0.5)) * shadow_weight * 0.2
-                + (highlight_color - Vec3::splat(0.5)) * highlight_weight * 0.2;
-        });
-    }
-}
-
-// Selective saturation by luminance
-pub struct LuminanceSaturation {
-    pub shadow_sat: f32,
-    pub midtone_sat: f32,
-    pub highlight_sat: f32,
-}
-
-impl ProcessingStage for LuminanceSaturation {
-    fn process(&self, image: &mut ProcessingImage) {
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
-            let lum = pixel.x * 0.2722 + pixel.y * 0.6741 + pixel.z * 0.0537;
-
-            // Calculate weights
-            let shadow_weight = (1.0 - lum * 3.0).max(0.0);
-            let highlight_weight = ((lum - 0.7) * 3.3).max(0.0).min(1.0);
-            let midtone_weight = 1.0 - shadow_weight - highlight_weight;
-
-            // Weighted saturation multiplier
-            let sat_mult = shadow_weight * self.shadow_sat
-                + midtone_weight * self.midtone_sat
-                + highlight_weight * self.highlight_sat;
-
-            // Apply saturation
-            let desaturated = Vec3::splat(lum);
-            *pixel = desaturated + (*pixel - desaturated) * sat_mult;
-        });
-    }
-}
-
-// RGB to HSL conversion
-fn _rgb_to_hsl(pixel: Vec3) -> (f32, f32, f32) {
-    let max = pixel.x.max(pixel.y).max(pixel.z);
-    let min = pixel.x.min(pixel.y).min(pixel.z);
-    let delta = max - min;
-
-    let l = (max + min) / 2.0;
-
-    if delta == 0.0 {
-        return (0.0, 0.0, l);
-    }
-
-    let s = if l < 0.5 {
-        delta / (max + min)
+    if clamped_value <= pivot {
+        // Shadow region (no change from current)
+        pivot * (clamped_value / pivot).powf(contrast)
     } else {
-        delta / (2.0 - max - min)
-    };
+        // Highlight region with automatic rolloff
+        let highlight_input = (clamped_value - pivot) / (1.0 - pivot);
 
-    let h = if max == pixel.x {
-        ((pixel.y - pixel.z) / delta + if pixel.y < pixel.z { 6.0 } else { 0.0 }) / 6.0
-    } else if max == pixel.y {
-        ((pixel.z - pixel.x) / delta + 2.0) / 6.0
-    } else {
-        ((pixel.x - pixel.y) / delta + 4.0) / 6.0
-    };
+        // Automatic rolloff: stronger contrast becomes gentler as we approach 1.0
+        let rolloff_factor = 1.0 - highlight_input * 0.3; // Gentle automatic rolloff
+        let effective_contrast = 1.0 / (contrast * rolloff_factor);
 
-    (h * 360.0, s, l)
-}
-
-// HSL to RGB conversion
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Vec3 {
-    if s == 0.0 {
-        return Vec3::splat(l);
+        pivot + (1.0 - pivot) * highlight_input.powf(effective_contrast)
     }
-
-    let h = h / 360.0;
-    let q = if l < 0.5 {
-        l * (1.0 + s)
-    } else {
-        l + s - l * s
-    };
-    let p = 2.0 * l - q;
-
-    Vec3::new(
-        hue_to_rgb(p, q, h + 1.0 / 3.0),
-        hue_to_rgb(p, q, h),
-        hue_to_rgb(p, q, h - 1.0 / 3.0),
-    )
-}
-
-fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
-    if t < 0.0 {
-        t += 1.0;
-    }
-    if t > 1.0 {
-        t -= 1.0;
-    }
-    if t < 1.0 / 6.0 {
-        return p + (q - p) * 6.0 * t;
-    }
-    if t < 1.0 / 2.0 {
-        return q;
-    }
-    if t < 2.0 / 3.0 {
-        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
-    }
-    p
 }
 
 pub struct ColorRichness {
-    pub separation_strength: f32,
-    pub density_strength: f32,
+    pub saturation_boost: f32, // How much to increase chroma
 }
 
 impl ProcessingStage for ColorRichness {
     fn process(&self, image: &mut ProcessingImage) {
-        image.pixels.pixels_mut().par_bridge().for_each(|pixel| {
+        let mut oklab_image = image.convert(OKLAB);
+
+        oklab_image.iter().for_each(|pixel| {
+            let lightness = pixel.x;
+            let _chroma = (pixel.y * pixel.y + pixel.z * pixel.z).sqrt();
+
+            let midtone_protection = (1.0 - (2.0 * (lightness - 0.6)).abs()).max(0.0);
+            let saturation_factor = 1.0 + self.saturation_boost * (1.0 - midtone_protection);
+
+            // Apply saturation boost to a/b channels
+            pixel.y *= saturation_factor;
+            pixel.z *= saturation_factor;
+        });
+
+        *image = oklab_image.convert(ACES_CG);
+    }
+}
+
+pub struct LegacyColorRichness {
+    pub separation_strength: f32,
+    pub density_strength: f32,
+}
+
+impl ProcessingStage for LegacyColorRichness {
+    fn process(&self, image: &mut ProcessingImage) {
+        image.iter().for_each(|pixel| {
             let lum = pixel.x * 0.2722 + pixel.y * 0.6741 + pixel.z * 0.0537;
 
             // Color separation - enhance channel differences
@@ -266,5 +116,54 @@ impl ProcessingStage for ColorRichness {
 
             *pixel = dense * lum_correction;
         });
+    }
+}
+
+pub struct SelectiveColorRichness {
+    pub red_boost: f32,
+    pub orange_boost: f32,
+    pub yellow_boost: f32,
+    pub green_boost: f32,
+    pub cyan_boost: f32,
+    pub blue_boost: f32,
+    pub magenta_boost: f32,
+}
+
+impl ProcessingStage for SelectiveColorRichness {
+    fn process(&self, image: &mut ProcessingImage) {
+        let mut oklab_image = image.convert(OKLAB);
+
+        oklab_image.iter().for_each(|pixel| {
+            let chroma = (pixel.y * pixel.y + pixel.z * pixel.z).sqrt();
+
+            if chroma > 0.01 {
+                // Only process pixels with actual color
+                let hue = pixel.z.atan2(pixel.y); // Hue angle in radians
+                let saturation_factor = self.get_saturation_for_hue(hue);
+
+                pixel.y *= saturation_factor;
+                pixel.z *= saturation_factor;
+            }
+        });
+
+        *image = oklab_image.convert(ACES_CG);
+    }
+}
+
+impl SelectiveColorRichness {
+    fn get_saturation_for_hue(&self, hue: f32) -> f32 {
+        // Convert hue to 0-2π range
+        let normalized_hue = if hue < 0.0 { hue + 2.0 * PI } else { hue };
+
+        // Map hue ranges to boost values (these are approximate OKLAB hue ranges)
+        match (normalized_hue / PI * 180.0) as i32 {
+            0..=30 => 1.0 + self.red_boost,
+            31..=60 => 1.0 + self.orange_boost,
+            61..=120 => 1.0 + self.yellow_boost,
+            121..=180 => 1.0 + self.green_boost,
+            181..=240 => 1.0 + self.cyan_boost,
+            241..=300 => 1.0 + self.blue_boost,
+            _ => 1.0 + self.magenta_boost,
+        }
     }
 }

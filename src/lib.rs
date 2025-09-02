@@ -1,36 +1,29 @@
-//! Sienna - A high-performance image processing library
-//!
-//! This library provides tools for advanced image processing with color-accurate
-//! workflows using ACES color space for professional image manipulation.
-
 pub mod builder;
 pub mod color;
 pub mod error;
 pub mod pipeline;
+pub mod recipes;
 pub mod stages;
 
 use image::GenericImageView;
 use imgref::ImgVec;
 use kolor::{
     ColorSpace, Vec3,
-    spaces::{ACES_CG, LINEAR_SRGB, PRO_PHOTO},
+    spaces::{ACES_CG, ENCODED_SRGB},
 };
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::path::Path;
 
 use crate::color::convert_pixels;
 pub use crate::error::ProcessingError;
 
-/// Core image structure for processing operations
-///
-/// Stores image data in a linear color space with associated metadata.
-/// All processing operations work in ACES-CG color space for accuracy.
 pub struct ProcessingImage {
     pixels: ImgVec<Vec3>,
     space: ColorSpace,
 }
 
 impl ProcessingImage {
-    fn convert(&self, to: ColorSpace) -> Self {
+    pub fn convert(&self, to: ColorSpace) -> Self {
         let pixels = convert_pixels(&self.pixels.buf(), self.space, to);
         Self {
             pixels: ImgVec::new(pixels, self.pixels.width(), self.pixels.height()),
@@ -38,7 +31,18 @@ impl ProcessingImage {
         }
     }
 
+    pub fn iter(&mut self) -> impl ParallelIterator<Item = &mut Vec3> {
+        self.pixels.pixels_mut().par_bridge()
+    }
+
     pub fn from_png(path: &Path) -> Result<Self, ProcessingError> {
+        Self::from_png_with_colorspace(path, ENCODED_SRGB)
+    }
+
+    pub fn from_png_with_colorspace(
+        path: &Path,
+        source_colorspace: ColorSpace,
+    ) -> Result<Self, ProcessingError> {
         let img = image::open(path)?;
 
         let pixels = img
@@ -52,7 +56,7 @@ impl ProcessingImage {
             })
             .collect();
 
-        let pixels_acescg = convert_pixels(&pixels, PRO_PHOTO, ACES_CG);
+        let pixels_acescg = convert_pixels(&pixels, source_colorspace, ACES_CG);
 
         Ok(Self {
             pixels: ImgVec::new(pixels_acescg, img.width() as usize, img.height() as usize),
@@ -61,7 +65,7 @@ impl ProcessingImage {
     }
 
     pub fn to_jpg(&self, path: &Path) -> Result<(), ProcessingError> {
-        let image_srgb = &self.convert(LINEAR_SRGB);
+        let image_srgb = &self.convert(ENCODED_SRGB);
 
         let img = image::ImageBuffer::from_fn(
             image_srgb.pixels.width() as u32,
@@ -70,9 +74,9 @@ impl ProcessingImage {
                 let idx = y as usize * image_srgb.pixels.width() + x as usize;
                 let color = image_srgb.pixels.buf().get(idx).unwrap();
                 image::Rgb([
-                    (color.x * 255.0) as u8,
-                    (color.y * 255.0) as u8,
-                    (color.z * 255.0) as u8,
+                    (color.x.clamp(0.0, 1.0) * 255.0) as u8,
+                    (color.y.clamp(0.0, 1.0) * 255.0) as u8,
+                    (color.z.clamp(0.0, 1.0) * 255.0) as u8,
                 ])
             },
         );

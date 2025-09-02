@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use sienna::{ProcessingError, ProcessingImage, builder::PipelineBuilder, pipeline::Pipeline};
+use sienna::{ProcessingError, ProcessingImage, builder::PipelineBuilder};
 
 fn main() -> Result<(), ProcessingError> {
-    let filename = "test";
+    let filename = "small";
     let mut image = ProcessingImage::from_png(Path::new(format!("{}.png", filename).as_str()))?;
 
-    let pipeline = create_leica_style_pipeline();
+    let pipeline = create_pipeline().build();
 
     pipeline.process(&mut image);
 
@@ -14,18 +14,18 @@ fn main() -> Result<(), ProcessingError> {
     Ok(())
 }
 
-pub fn create_leica_style_pipeline() -> Pipeline {
+pub fn create_pipeline() -> PipelineBuilder {
     PipelineBuilder::new()
-        // .exposure(0.1)
-        .film_blacks(0.5, 0.01)
-        // .color_grade(
-        //     Vec3::new(-0.01, 0.005, 0.02),
-        //     Vec3::new(0.015, 0.01, -0.005),
-        //     Vec3::new(0.0, -0.005, -0.01),
-        // )
-        // .split_tone(220.0, 0.12, 35.0, 0.08)
-        // .luminance_saturation(0.85, 1.15, 0.65)
-        // .richness(0.3, 0.8)
-        // .film_curve(0.2)
-        .build()
+        .contrast(0.8, 0.65)
+        .exposure(0.1)
+        // .contrast(1.3, 0.65)
+        .selective_richness(
+            0.0,  // red
+            0.0,  // orange
+            -0.3, // yellow
+            0.9,  // green
+            0.2,  // cyan
+            0.4,  // blue
+            0.1,  // magenta
+        )
 }
